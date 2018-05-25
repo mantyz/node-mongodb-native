@@ -10,14 +10,10 @@ const delay = require('./shared').delay;
 const expect = chai.expect;
 
 describe('Change Stream Spec', function() {
-  const specStr = fs.readFileSync(`${__dirname}/spec/change-stream/change-streams.json`, 'utf8');
-  const specData = JSON.parse(specStr);
-  const ALL_DBS = [specData.database_name, specData.database_name_2];
-
   const EJSONToJSON = x => JSON.parse(EJSON.stringify(x));
 
   before(function() {
-    return setupDatabase(this.configuration, ALL_DBS).then(() => {
+    return setupDatabase(this.configuration).then(() => {
       this.globalClient = new MongoClient(this.configuration.url());
       return this.globalClient.connect();
     });
@@ -29,43 +25,57 @@ describe('Change Stream Spec', function() {
     return new Promise(r => gc.close(() => r()));
   });
 
-  beforeEach(function() {
-    const gc = this.globalClient;
-    const sDB = specData.database_name;
-    const sColl = specData.collection_name;
-    return Promise.all(ALL_DBS.map(db => gc.db(db).dropDatabase()))
-      .then(() => gc.db(sDB).createCollection(sColl))
-      .then(() => new MongoClient(this.configuration.url(), { monitorCommands: true }).connect())
-      .then(client => {
-        const ctx = (this.ctx = {});
-        const events = (this.events = []);
-        ctx.gc = gc;
-        ctx.client = client;
-        ctx.db = ctx.client.db(sDB);
-        ctx.collection = ctx.db.collection(sColl);
-        ctx.client.on('commandStarted', e => events.push(e));
+  fs
+    .readdirSync(`${__dirname}/spec/change-stream`)
+    .filter(filename => filename.match(/\.json$/))
+    .forEach(filename => {
+      const specString = fs.readFileSync(`${__dirname}/spec/change-stream/${filename}`, 'utf8');
+      const specData = JSON.parse(specString);
+
+      const ALL_DBS = [specData.database_name, specData.database2_name];
+
+      describe(filename, () => {
+        beforeEach(function() {
+          const gc = this.globalClient;
+          const sDB = specData.database_name;
+          const sColl = specData.collection_name;
+          return Promise.all(ALL_DBS.map(db => gc.db(db).dropDatabase()))
+            .then(() => gc.db(sDB).createCollection(sColl))
+            .then(() =>
+              new MongoClient(this.configuration.url(), { monitorCommands: true }).connect()
+            )
+            .then(client => {
+              const ctx = (this.ctx = {});
+              const events = (this.events = []);
+              ctx.gc = gc;
+              ctx.client = client;
+              ctx.database = ctx.client.db(sDB);
+              ctx.collection = ctx.database.collection(sColl);
+              ctx.client.on('commandStarted', e => events.push(e));
+            });
+        });
+
+        afterEach(function(done) {
+          const ctx = this.ctx;
+          this.ctx = undefined;
+          this.events = undefined;
+
+          if (ctx.client) {
+            ctx.client.close(e => done(e));
+          } else {
+            done();
+          }
+        });
+
+        specData.tests.forEach(test => {
+          const itFn = test.skip ? it.skip : test.only ? it.only : it;
+          const metadata = generateMetadata(test);
+          const testFn = generateTestFn(test);
+
+          itFn(test.description, { metadata, test: testFn });
+        });
       });
-  });
-
-  afterEach(function(done) {
-    const ctx = this.ctx;
-    this.ctx = undefined;
-    this.events = undefined;
-
-    if (ctx.client) {
-      ctx.client.close(e => done(e));
-    } else {
-      done();
-    }
-  });
-
-  specData.tests.forEach(test => {
-    const itFn = test.skip ? it.skip : test.only ? it.only : it;
-    const metadata = generateMetadata(test);
-    const testFn = generateTestFn(test);
-
-    itFn(test.description, { metadata, test: testFn });
-  });
+    });
 
   // Fn Generator methods
 
